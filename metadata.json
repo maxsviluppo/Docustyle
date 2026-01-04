@@ -1,0 +1,8 @@
+{
+  "name": "DocuStyle Pro",
+  "description": "A professional document layout and typesetting application that allows users to create, format, and structure documents with A4/A5 support, rich text editing, and AI-powered content refinement.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
