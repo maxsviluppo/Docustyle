@@ -1,9 +1,13 @@
 
 import { GoogleGenAI } from "@google/genai";
 
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
+// Use the API key directly from process.env as per GenAI SDK guidelines
+function getAI() {
+  return new GoogleGenAI({ apiKey: process.env.API_KEY });
+}
 
 export async function refineDocumentContent(content: string, instruction: string): Promise<string> {
+  const ai = getAI();
   try {
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
@@ -13,14 +17,19 @@ export async function refineDocumentContent(content: string, instruction: string
       CONTENT:
       ${content}`,
     });
+    // Use .text property as a getter, not a method
     return response.text || content;
-  } catch (error) {
+  } catch (error: any) {
     console.error("Error refining document:", error);
+    if (error.message?.includes("Requested entity was not found")) {
+        throw new Error("API_KEY_RESET");
+    }
     return content;
   }
 }
 
 export async function formatDocumentStructure(content: string): Promise<string> {
+  const ai = getAI();
   try {
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
@@ -37,14 +46,19 @@ export async function formatDocumentStructure(content: string): Promise<string> 
       RAW TEXT:
       ${content}`,
     });
+    // Use .text property as a getter, not a method
     return response.text || content;
-  } catch (error) {
+  } catch (error: any) {
     console.error("Error formatting structure:", error);
+    if (error.message?.includes("Requested entity was not found")) {
+        throw new Error("API_KEY_RESET");
+    }
     return content;
   }
 }
 
 export async function generateFootnotes(content: string): Promise<string> {
+  const ai = getAI();
   try {
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
@@ -54,29 +68,37 @@ export async function generateFootnotes(content: string): Promise<string> {
       TEXT:
       ${content.replace(/<[^>]*>?/gm, '')}`,
     });
+    // Use .text property as a getter, not a method
     return response.text || '';
-  } catch (error) {
+  } catch (error: any) {
     console.error("Error generating footnotes:", error);
+    if (error.message?.includes("Requested entity was not found")) {
+        throw new Error("API_KEY_RESET");
+    }
     return '';
   }
 }
 
 export async function extractTextFromImage(base64Data: string, mimeType: string): Promise<string> {
+  const ai = getAI();
   try {
+    // Update contents structure for multimodal input as per SDK guidelines
     const response = await ai.models.generateContent({
       model: 'gemini-3-flash-preview',
-      contents: [
-        {
-          parts: [
-            { text: "Extract the text from this image and format it into professional HTML paragraphs. Only return the HTML content, no explanations." },
-            { inlineData: { data: base64Data, mimeType } }
-          ]
-        }
-      ]
+      contents: {
+        parts: [
+          { text: "Extract the text from this image and format it into professional HTML paragraphs. Only return the HTML content, no explanations." },
+          { inlineData: { data: base64Data, mimeType } }
+        ]
+      }
     });
+    // Use .text property as a getter, not a method
     return response.text || '';
-  } catch (error) {
+  } catch (error: any) {
     console.error("Error extracting text from image:", error);
+    if (error.message?.includes("Requested entity was not found")) {
+        throw new Error("API_KEY_RESET");
+    }
     return "Errore durante l'acquisizione del testo.";
   }
 }

@@ -1,16 +1,24 @@
 
 import React, { useState, useRef, useEffect } from 'react';
-import { PageFormat, PageSettings, FORMAT_DIMENSIONS, FONTS, PREDEFINED_TEMPLATES, SavedProject, DocumentTemplate, PageNumbering } from './types';
-import { refineDocumentContent, generateFootnotes, extractTextFromImage, formatDocumentStructure } from './geminiService';
+import { PageFormat, PageSettings, FORMAT_DIMENSIONS, FONTS, PREDEFINED_TEMPLATES, SavedProject, DocumentTemplate } from './types';
+import { refineDocumentContent, formatDocumentStructure, extractTextFromImage } from './geminiService';
+
+// Dichiarazione globale sicura per gli strumenti AI Studio - Utilizza il tipo AIStudio previsto per evitare conflitti di ridichiarazione
+declare global {
+  interface Window {
+    readonly aistudio: AIStudio;
+  }
+}
 
 const App: React.FC = () => {
   const [settings, setSettings] = useState<PageSettings>(PREDEFINED_TEMPLATES[0].settings);
   const [content, setContent] = useState<string>(PREDEFINED_TEMPLATES[0].initialContent);
   const [savedProjects, setSavedProjects] = useState<SavedProject[]>([]);
-  const [activeTab, setActiveTab] = useState<'settings' | 'templates' | 'projects'>('settings');
+  const [activeTab, setActiveTab] = useState<'settings' | 'templates' | 'projects' | 'api-config'>('settings');
   const [isAiLoading, setIsAiLoading] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [showFastModeMenu, setShowFastModeMenu] = useState(false);
+  const [hasApiKey, setHasApiKey] = useState<boolean | null>(null);
   
   // Camera State
   const [isCameraOpen, setIsCameraOpen] = useState(false);
@@ -22,6 +30,7 @@ const App: React.FC = () => {
   const fastModeRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    checkApiKeyStatus();
     const stored = localStorage.getItem('docustyle_projects');
     if (stored) {
       try {
@@ -31,6 +40,34 @@ const App: React.FC = () => {
       }
     }
   }, []);
+
+  const checkApiKeyStatus = async () => {
+    try {
+      if (window.aistudio) {
+        const hasKey = await window.aistudio.hasSelectedApiKey();
+        setHasApiKey(hasKey);
+      } else {
+        // Fallback se non siamo in ambiente AI Studio ma abbiamo process.env.API_KEY
+        setHasApiKey(!!process.env.API_KEY);
+      }
+    } catch (e) {
+      console.error("Errore verifica API Key", e);
+      setHasApiKey(false);
+    }
+  };
+
+  const handleOpenApiKeySelector = async () => {
+    if (window.aistudio) {
+      try {
+        await window.aistudio.openSelectKey();
+        setHasApiKey(true);
+      } catch (e) {
+        console.error("Errore apertura selettore chiave", e);
+      }
+    } else {
+      alert("Il selettore di chiavi API è disponibile solo nell'ambiente AI Studio.");
+    }
+  };
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -45,7 +82,29 @@ const App: React.FC = () => {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  // Camera logic
+  const handleAiCall = async (fn: () => Promise<any>) => {
+    if (!hasApiKey && !process.env.API_KEY) {
+      alert("Configura prima una Chiave API nelle Impostazioni.");
+      setActiveTab('api-config');
+      return;
+    }
+    setIsAiLoading(true);
+    try {
+      await fn();
+    } catch (error: any) {
+      console.error("AI Call Error:", error);
+      if (error.message?.includes("Requested entity was not found") || error.message === "API_KEY_RESET") {
+        setHasApiKey(false);
+        alert("La chiave API non è più valida o è scaduta. Selezionala nuovamente.");
+        setActiveTab('api-config');
+      } else {
+        alert("Si è verificato un errore durante la chiamata AI. Verifica la tua connessione e la validità della chiave.");
+      }
+    } finally {
+      setIsAiLoading(false);
+    }
+  };
+
   const openCamera = async () => {
     setIsCameraOpen(true);
     try {
@@ -80,12 +139,11 @@ const App: React.FC = () => {
         const base64 = imageData.split(',')[1];
         
         closeCamera();
-        setIsAiLoading(true);
-        
-        const extractedText = await extractTextFromImage(base64, 'image/jpeg');
-        const structured = await formatDocumentStructure(extractedText);
-        setContent(prev => prev + structured);
-        setIsAiLoading(false);
+        handleAiCall(async () => {
+          const extractedText = await extractTextFromImage(base64, 'image/jpeg');
+          const structured = await formatDocumentStructure(extractedText);
+          setContent(prev => prev + structured);
+        });
       }
     }
   };
@@ -146,31 +204,18 @@ const App: React.FC = () => {
     }
   };
 
-  const refineWithAi = async () => {
-    setIsAiLoading(true);
-    const result = await refineDocumentContent(content, "Rendi il testo più professionale e scorrevole seguendo regole di videoscrittura istituzionale");
-    setContent(result);
-    setIsAiLoading(false);
+  const refineWithAi = () => {
+    handleAiCall(async () => {
+      const result = await refineDocumentContent(content, "Rendi il testo più professionale e scorrevole seguendo regole di videoscrittura istituzionale");
+      setContent(result);
+    });
   };
 
-  const autoLayoutAi = async () => {
-    setIsAiLoading(true);
-    const result = await formatDocumentStructure(content);
-    setContent(result);
-    setIsAiLoading(false);
-  };
-
-  const addAiFootnotes = async () => {
-    setIsAiLoading(true);
-    const footnotes = await generateFootnotes(content);
-    const footnotesHtml = `
-      <div class="ai-footnote no-print">
-        <strong>Suggerimenti Professionali AI</strong>
-        ${footnotes.split('\n').filter(f => f.trim()).map(f => `• ${f.trim()}`).join('<br/>')}
-      </div>
-    `;
-    setContent(prev => prev + footnotesHtml);
-    setIsAiLoading(false);
+  const autoLayoutAi = () => {
+    handleAiCall(async () => {
+      const result = await formatDocumentStructure(content);
+      setContent(result);
+    });
   };
 
   const handlePrint = () => {
@@ -194,34 +239,6 @@ const App: React.FC = () => {
     downloadFile(plainText, "documento.txt", "text/plain");
   };
 
-  const exportAsHtml = () => {
-    const fullHtml = `
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <meta charset="utf-8">
-        <style>
-          body { 
-            font-family: ${settings.fontFamily}; 
-            line-height: ${settings.lineHeight}; 
-            padding: ${settings.margins.top}mm ${settings.margins.right}mm ${settings.margins.bottom}mm ${settings.margins.left}mm;
-            font-size: ${settings.fontSizeBody}pt;
-            text-align: justify;
-          }
-          h1 { font-size: ${settings.fontSizeH1}pt; margin-bottom: 0.5em; }
-          h2 { font-size: ${settings.fontSizeH2}pt; margin-bottom: 0.4em; }
-          p { 
-            margin-bottom: ${settings.paragraphSpacing}px; 
-            text-indent: ${settings.firstLineIndent}mm;
-          }
-        </style>
-      </head>
-      <body>${content}</body>
-      </html>
-    `;
-    downloadFile(fullHtml, "documento.html", "text/html");
-  };
-
   const exportAsDoc = () => {
     const header = `<html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'>
       <head><meta charset='utf-8'><title>Export DOC</title></head><body>`;
@@ -233,13 +250,6 @@ const App: React.FC = () => {
   const dims = FORMAT_DIMENSIONS[settings.format];
   const width = settings.orientation === 'portrait' ? dims.width : dims.height;
   const height = settings.orientation === 'portrait' ? dims.height : dims.width;
-
-  const updatePageNumbering = (key: keyof PageNumbering, value: any) => {
-    setSettings(s => ({
-      ...s,
-      pageNumbering: { ...s.pageNumbering, [key]: value }
-    }));
-  };
 
   return (
     <div className="min-h-screen flex flex-col h-screen overflow-hidden">
@@ -257,11 +267,7 @@ const App: React.FC = () => {
                 <i className="fas fa-camera text-2xl"></i>
               </button>
             </div>
-            <div className="absolute top-4 left-4 text-white text-xs font-bold uppercase tracking-widest bg-black/40 px-3 py-1 rounded-full">
-              Acquisizione Testo AI
-            </div>
           </div>
-          <p className="text-white/60 text-sm mt-4 italic">Inquadra il testo e scatta una foto per acquisirlo e impaginarlo</p>
         </div>
       )}
 
@@ -275,7 +281,6 @@ const App: React.FC = () => {
           </div>
 
           <div className="flex items-center gap-2 sm:gap-3">
-            {/* Fast Mode Selector */}
             <div className="relative" ref={fastModeRef}>
               <button 
                 onClick={() => setShowFastModeMenu(!showFastModeMenu)}
@@ -283,7 +288,6 @@ const App: React.FC = () => {
               >
                 <i className="fas fa-bolt text-yellow-400"></i>
                 <span className="hidden md:inline">Modalità Veloce</span>
-                <i className={`fas fa-chevron-down text-[10px] transition-transform ${showFastModeMenu ? 'rotate-180' : ''}`}></i>
               </button>
               
               {showFastModeMenu && (
@@ -299,13 +303,8 @@ const App: React.FC = () => {
                         <i className={`fas ${t.icon} text-indigo-500 w-4 text-center`}></i>
                         <span className="font-bold text-gray-800 text-xs">{t.name}</span>
                       </div>
-                      <span className="text-[9px] text-gray-400 mt-0.5 pl-7">{t.description}</span>
                     </button>
                   ))}
-                  <div className="p-3 bg-gray-50 mt-1 flex gap-2">
-                    <i className="fas fa-info-circle text-indigo-400 text-xs mt-0.5"></i>
-                    <p className="text-[10px] text-gray-500 italic">Applica istantaneamente i valori di margini, font e interlinea al testo corrente.</p>
-                  </div>
                 </div>
               )}
             </div>
@@ -315,24 +314,20 @@ const App: React.FC = () => {
               className="flex items-center gap-2 px-3 py-1.5 bg-green-50 text-green-700 rounded-md hover:bg-green-100 transition text-sm font-semibold border border-green-100"
             >
               <i className="fas fa-camera"></i>
-              <span className="hidden md:inline">Scansiona Foto</span>
+              <span className="hidden md:inline">Scansiona</span>
             </button>
 
             <button 
               onClick={autoLayoutAi}
               disabled={isAiLoading}
-              className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-indigo-600 to-violet-600 text-white rounded-md hover:from-indigo-700 hover:to-violet-700 transition disabled:opacity-50 text-sm font-bold shadow-lg shadow-indigo-100 flex items-center gap-2 active:scale-95"
+              className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-indigo-600 to-violet-600 text-white rounded-md hover:from-indigo-700 hover:to-violet-700 transition disabled:opacity-50 text-sm font-bold shadow-lg shadow-indigo-100"
             >
               <i className={`fas ${isAiLoading ? 'fa-spinner fa-spin' : 'fa-magic'}`}></i>
               <span>Auto-Layout AI</span>
             </button>
             
-            <button 
-              onClick={handlePrint}
-              className="flex items-center gap-2 px-3 py-1.5 bg-slate-100 text-slate-700 rounded-md hover:bg-slate-200 transition text-sm font-semibold border border-slate-200 shadow-sm"
-            >
+            <button onClick={handlePrint} className="px-3 py-1.5 bg-slate-100 text-slate-700 rounded-md text-sm font-semibold border border-slate-200 shadow-sm">
               <i className="fas fa-print"></i>
-              <span className="hidden md:inline">Stampa</span>
             </button>
 
             <div className="relative" ref={exportMenuRef}>
@@ -342,59 +337,55 @@ const App: React.FC = () => {
               >
                 <i className="fas fa-file-export"></i>
                 <span className="hidden md:inline">Esporta</span>
-                <i className={`fas fa-chevron-down text-[10px] transition-transform ${showExportMenu ? 'rotate-180' : ''}`}></i>
               </button>
               
               {showExportMenu && (
                 <div className="absolute right-0 mt-2 w-64 bg-white border border-gray-200 rounded-lg shadow-xl z-[100] py-1 animate-fadeIn">
-                  <div className="px-4 py-2 text-[10px] font-bold text-gray-400 uppercase border-b border-gray-50 mb-1">Formati File</div>
-                  <ExportOption icon="fa-file-pdf" label="Scarica PDF (via Stampa)" onClick={handlePrint} />
-                  <ExportOption icon="fa-file-word" label="Microsoft Word (.doc)" onClick={exportAsDoc} />
-                  <ExportOption icon="fa-file-alt" label="Testo Semplice (.txt)" onClick={exportAsTxt} />
-                  <ExportOption icon="fa-code" label="Sorgente Web (.html)" onClick={exportAsHtml} />
+                  <ExportOption icon="fa-file-pdf" label="Scarica PDF" onClick={handlePrint} />
+                  <ExportOption icon="fa-file-word" label="Microsoft Word" onClick={exportAsDoc} />
+                  <ExportOption icon="fa-file-alt" label="Testo (.txt)" onClick={exportAsTxt} />
                 </div>
               )}
             </div>
 
-            <button 
-              onClick={saveCurrentProject}
-              className="flex items-center gap-2 px-3 py-1.5 bg-white border border-indigo-200 text-indigo-600 rounded-md hover:bg-indigo-50 transition text-sm font-semibold shadow-sm"
-            >
+            <button onClick={saveCurrentProject} className="p-2 bg-indigo-50 text-indigo-600 rounded-md border border-indigo-200">
               <i className="fas fa-save"></i>
-              <span className="hidden md:inline">Salva</span>
             </button>
           </div>
         </div>
 
-        <div className="bg-gray-50 border-b border-gray-200 p-2 overflow-x-auto flex justify-center">
-          <div className="flex items-center gap-1 sm:gap-2">
-            <div className="flex bg-white rounded border border-gray-200 p-1 shadow-sm">
+        {/* TOOLBAR FORMATTAZIONE */}
+        <div className="bg-gray-50 border-b border-gray-200 p-2 flex justify-center">
+          <div className="flex items-center gap-4">
+            <div className="flex bg-white rounded border border-gray-200 p-1 shadow-sm gap-0.5">
               <ToolbarButton icon="bold" onClick={() => formatDoc('bold')} />
               <ToolbarButton icon="italic" onClick={() => formatDoc('italic')} />
               <ToolbarButton icon="underline" onClick={() => formatDoc('underline')} />
-            </div>
-            <div className="flex bg-white rounded border border-gray-200 p-1 shadow-sm">
-              <ToolbarButton icon="heading" onClick={() => formatDoc('formatBlock', 'h1')} label="1" />
-              <ToolbarButton icon="heading" onClick={() => formatDoc('formatBlock', 'h2')} label="2" />
-              <ToolbarButton icon="paragraph" onClick={() => formatDoc('formatBlock', 'p')} />
-            </div>
-            <div className="flex bg-white rounded border border-gray-200 p-1 shadow-sm">
+              <div className="w-px h-6 bg-gray-200 mx-1"></div>
               <ToolbarButton icon="align-left" onClick={() => formatDoc('justifyLeft')} />
               <ToolbarButton icon="align-center" onClick={() => formatDoc('justifyCenter')} />
+              <ToolbarButton icon="align-right" onClick={() => formatDoc('justifyRight')} />
               <ToolbarButton icon="align-justify" onClick={() => formatDoc('justifyFull')} />
             </div>
-            <div className="flex bg-white rounded border border-gray-200 p-1 shadow-sm">
-              <ToolbarButton icon="print" onClick={handlePrint} />
+
+            <div className="flex bg-white rounded border border-gray-200 p-1 shadow-sm gap-0.5">
+              <ToolbarButton icon="heading" onClick={() => formatDoc('formatBlock', 'h1')} label="1" />
+              <ToolbarButton icon="heading" onClick={() => formatDoc('formatBlock', 'h2')} label="2" />
+              <div className="w-px h-6 bg-gray-200 mx-1"></div>
+              <ToolbarButton icon="list-ul" onClick={() => formatDoc('insertUnorderedList')} />
+              <ToolbarButton icon="list-ol" onClick={() => formatDoc('insertOrderedList')} />
             </div>
-            <button 
-              onClick={refineWithAi}
-              className="px-3 py-1 text-[10px] font-bold uppercase text-indigo-600 hover:bg-indigo-50 rounded transition flex items-center gap-1"
-            >
-              <i className="fas fa-wand-sparkles"></i> Perfeziona AI
-            </button>
-            <button onClick={addAiFootnotes} className="px-3 py-1 text-[10px] font-bold uppercase text-indigo-600 hover:bg-indigo-50 rounded transition">
-              <i className="fas fa-plus mr-1"></i> Footnote AI
-            </button>
+
+            <div className="flex bg-white rounded border border-gray-200 p-1 shadow-sm gap-0.5">
+              <ToolbarButton icon="eraser" onClick={() => formatDoc('removeFormat')} />
+              <button 
+                onClick={refineWithAi}
+                className="px-3 py-1 text-[10px] font-bold uppercase text-indigo-600 hover:bg-indigo-50 rounded transition flex items-center gap-1.5"
+                title="Perfeziona con AI"
+              >
+                <i className="fas fa-wand-sparkles"></i> Perfeziona AI
+              </button>
+            </div>
           </div>
         </div>
       </header>
@@ -404,10 +395,44 @@ const App: React.FC = () => {
           <NavIcon icon="fa-sliders-h" active={activeTab === 'settings'} onClick={() => setActiveTab('settings')} label="Layout" />
           <NavIcon icon="fa-layer-group" active={activeTab === 'templates'} onClick={() => setActiveTab('templates')} label="Modelli" />
           <NavIcon icon="fa-folder-open" active={activeTab === 'projects'} onClick={() => setActiveTab('projects')} label="Progetti" />
+          <div className="mt-auto border-t border-slate-800 w-full pt-6 flex flex-col items-center gap-4">
+            <NavIcon icon="fa-cog" active={activeTab === 'api-config'} onClick={() => setActiveTab('api-config')} label="API" />
+          </div>
         </nav>
 
         <aside className="w-64 md:w-80 bg-white border-r border-gray-200 overflow-y-auto no-print flex-shrink-0 shadow-lg z-10">
           <div className="p-6">
+            {activeTab === 'api-config' && (
+              <div className="space-y-6 animate-fadeIn">
+                <h3 className="text-[11px] font-bold text-gray-400 uppercase tracking-widest mb-4">Configurazione API</h3>
+                <div className="bg-slate-50 p-5 rounded-2xl border border-slate-200 space-y-4">
+                  <div className="flex items-center gap-3">
+                    <div className={`w-3 h-3 rounded-full ${hasApiKey ? 'bg-green-500 shadow-[0_0_10px_rgba(34,197,94,0.5)]' : 'bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.5)]'}`}></div>
+                    <span className="text-xs font-bold text-slate-700 uppercase">
+                      Stato: {hasApiKey ? 'Connesso' : 'Non Configurato'}
+                    </span>
+                  </div>
+                  <p className="text-[10px] text-slate-500 leading-relaxed italic">
+                    Per utilizzare le funzioni di intelligenza artificiale è necessario collegare una Chiave API Gemini da un progetto Google Cloud.
+                  </p>
+                  <button 
+                    onClick={handleOpenApiKeySelector}
+                    className="w-full bg-indigo-600 text-white text-[10px] font-bold uppercase py-3 rounded-xl shadow-lg shadow-indigo-100 hover:bg-indigo-700 transition active:scale-95"
+                  >
+                    {hasApiKey ? 'Cambia Chiave API' : 'Seleziona Chiave API'}
+                  </button>
+                  <a 
+                    href="https://ai.google.dev/gemini-api/docs/billing" 
+                    target="_blank" 
+                    rel="noopener noreferrer"
+                    className="block text-center text-[9px] text-indigo-500 underline uppercase font-bold"
+                  >
+                    Guida alla Fatturazione
+                  </a>
+                </div>
+              </div>
+            )}
+
             {activeTab === 'settings' && (
               <div className="space-y-8 animate-fadeIn">
                 <section>
@@ -422,24 +447,6 @@ const App: React.FC = () => {
                         {f}
                       </button>
                     ))}
-                  </div>
-
-                  <h3 className="text-[11px] font-bold text-gray-400 uppercase tracking-widest mb-4">Orientamento</h3>
-                  <div className="grid grid-cols-2 gap-2 mb-6">
-                    <button
-                      onClick={() => setSettings(s => ({ ...s, orientation: 'portrait' }))}
-                      className={`px-3 py-2 rounded text-[10px] border font-bold transition flex flex-col items-center gap-1 ${settings.orientation === 'portrait' ? 'bg-indigo-600 border-indigo-600 text-white shadow-md' : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'}`}
-                    >
-                      <i className="fas fa-file-alt"></i>
-                      Verticale
-                    </button>
-                    <button
-                      onClick={() => setSettings(s => ({ ...s, orientation: 'landscape' }))}
-                      className={`px-3 py-2 rounded text-[10px] border font-bold transition flex flex-col items-center gap-1 ${settings.orientation === 'landscape' ? 'bg-indigo-600 border-indigo-600 text-white shadow-md' : 'bg-white border-gray-200 text-gray-600 hover:bg-gray-50'}`}
-                    >
-                      <i className="fas fa-file-alt rotate-90"></i>
-                      Orizzontale
-                    </button>
                   </div>
 
                   <h3 className="text-[11px] font-bold text-gray-400 uppercase tracking-widest mb-4">Margini (mm)</h3>
@@ -459,63 +466,7 @@ const App: React.FC = () => {
                 </section>
 
                 <section>
-                  <h3 className="text-[11px] font-bold text-gray-400 uppercase tracking-widest mb-4">Numerazione Pagine</h3>
-                  <div className="bg-indigo-50 p-4 rounded-xl space-y-4 border border-indigo-100 shadow-sm">
-                    <div className="flex items-center justify-between">
-                      <label className="text-xs font-bold text-indigo-900 uppercase">Abilita Numeri</label>
-                      <button 
-                        onClick={() => updatePageNumbering('enabled', !settings.pageNumbering.enabled)}
-                        className={`w-10 h-5 rounded-full transition relative ${settings.pageNumbering.enabled ? 'bg-indigo-600' : 'bg-gray-300'}`}
-                      >
-                        <div className={`absolute top-1 w-3 h-3 bg-white rounded-full transition-all ${settings.pageNumbering.enabled ? 'right-1' : 'left-1'}`}></div>
-                      </button>
-                    </div>
-                    
-                    {settings.pageNumbering.enabled && (
-                      <div className="space-y-4 animate-fadeIn">
-                        <div className="grid grid-cols-2 gap-2">
-                          <div>
-                            <label className="text-[10px] font-bold text-indigo-400 uppercase mb-1 block">Inizia da</label>
-                            <input 
-                              type="number" 
-                              value={settings.pageNumbering.startPage} 
-                              onChange={e => updatePageNumbering('startPage', parseInt(e.target.value))}
-                              className="w-full border border-indigo-200 rounded px-2 py-1 text-xs outline-none" 
-                            />
-                          </div>
-                          <div>
-                            <label className="text-[10px] font-bold text-indigo-400 uppercase mb-1 block">Fine (opz.)</label>
-                            <input 
-                              type="number" 
-                              placeholder="Fine"
-                              value={settings.pageNumbering.endPage || ''} 
-                              onChange={e => updatePageNumbering('endPage', e.target.value ? parseInt(e.target.value) : null)}
-                              className="w-full border border-indigo-200 rounded px-2 py-1 text-xs outline-none" 
-                            />
-                          </div>
-                        </div>
-                        <div>
-                          <label className="text-[10px] font-bold text-indigo-400 uppercase mb-1 block">Posizionamento</label>
-                          <select 
-                            value={settings.pageNumbering.position} 
-                            onChange={e => updatePageNumbering('position', e.target.value)}
-                            className="w-full border border-indigo-200 rounded px-2 py-1 text-[10px] font-bold uppercase outline-none"
-                          >
-                            <option value="top-left">In alto a SX</option>
-                            <option value="top-center">In alto al centro</option>
-                            <option value="top-right">In alto a DX</option>
-                            <option value="bottom-left">In basso a SX</option>
-                            <option value="bottom-center">In basso al centro</option>
-                            <option value="bottom-right">In basso a DX</option>
-                          </select>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </section>
-
-                <section>
-                  <h3 className="text-[11px] font-bold text-gray-400 uppercase tracking-widest mb-4">Tipografia Professionale</h3>
+                  <h3 className="text-[11px] font-bold text-gray-400 uppercase tracking-widest mb-4">Tipografia</h3>
                   <div className="space-y-5">
                     <div>
                       <label className="text-[10px] font-bold text-gray-400 uppercase mb-1 block">Carattere</label>
@@ -548,22 +499,6 @@ const App: React.FC = () => {
                       </label>
                       <input type="range" min="1" max="3" step="0.05" value={settings.lineHeight} onChange={e => setSettings(s => ({ ...s, lineHeight: parseFloat(e.target.value) }))} className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-indigo-600" />
                     </div>
-
-                    <div>
-                      <label className="text-[10px] font-bold text-gray-400 uppercase flex justify-between mb-2">
-                        <span>Rientro prima riga (mm)</span>
-                        <span className="text-indigo-600">{settings.firstLineIndent}mm</span>
-                      </label>
-                      <input type="range" min="0" max="30" step="0.5" value={settings.firstLineIndent} onChange={e => setSettings(s => ({ ...s, firstLineIndent: parseFloat(e.target.value) }))} className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-indigo-600" />
-                    </div>
-
-                    <div>
-                      <label className="text-[10px] font-bold text-gray-400 uppercase flex justify-between mb-2">
-                        <span>Spazio dopo paragrafi (px)</span>
-                        <span className="text-indigo-600">{settings.paragraphSpacing}px</span>
-                      </label>
-                      <input type="range" min="0" max="40" step="1" value={settings.paragraphSpacing} onChange={e => setSettings(s => ({ ...s, paragraphSpacing: parseInt(e.target.value) }))} className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-indigo-600" />
-                    </div>
                   </div>
                 </section>
               </div>
@@ -571,7 +506,7 @@ const App: React.FC = () => {
 
             {activeTab === 'templates' && (
               <div className="space-y-4 animate-fadeIn">
-                <h3 className="text-[11px] font-bold text-gray-400 uppercase tracking-widest mb-4">Modelli di Documento</h3>
+                <h3 className="text-[11px] font-bold text-gray-400 uppercase tracking-widest mb-4">Modelli</h3>
                 {PREDEFINED_TEMPLATES.map(t => (
                   <button
                     key={t.id}
@@ -584,7 +519,6 @@ const App: React.FC = () => {
                       </div>
                       <span className="font-bold text-gray-800 text-xs">{t.name}</span>
                     </div>
-                    <p className="text-[10px] text-gray-500 leading-relaxed italic">{t.description}</p>
                   </button>
                 ))}
               </div>
@@ -592,12 +526,9 @@ const App: React.FC = () => {
 
             {activeTab === 'projects' && (
               <div className="space-y-4 animate-fadeIn">
-                <h3 className="text-[11px] font-bold text-gray-400 uppercase tracking-widest mb-4">Archivio Personale</h3>
+                <h3 className="text-[11px] font-bold text-gray-400 uppercase tracking-widest mb-4">Progetti Salvati</h3>
                 {savedProjects.length === 0 ? (
-                  <div className="text-center py-12">
-                    <i className="fas fa-folder-open text-3xl text-gray-200 mb-2"></i>
-                    <p className="text-[10px] text-gray-400 italic uppercase">Nessun progetto</p>
-                  </div>
+                  <p className="text-[10px] text-gray-400 italic text-center py-10 uppercase">Vuoto</p>
                 ) : (
                   savedProjects.map(p => (
                     <div
@@ -608,7 +539,7 @@ const App: React.FC = () => {
                       <div className="overflow-hidden">
                         <div className="font-bold text-gray-800 text-xs truncate">{p.name}</div>
                         <div className="text-[9px] text-gray-400 uppercase mt-1">
-                          {new Date(p.timestamp).toLocaleDateString()} • {p.settings.format}
+                          {new Date(p.timestamp).toLocaleDateString()}
                         </div>
                       </div>
                       <button 
@@ -626,14 +557,12 @@ const App: React.FC = () => {
         </aside>
 
         <div className="flex-1 overflow-auto p-8 md:p-12 flex justify-center items-start paper-container bg-gray-200/50 scroll-smooth">
-          {/* Loading Overlay */}
           {isAiLoading && (
             <div className="fixed inset-0 z-[300] bg-white/60 backdrop-blur-sm flex items-center justify-center">
               <div className="bg-white p-8 rounded-2xl shadow-2xl flex flex-col items-center gap-4 border border-indigo-100">
                 <div className="w-12 h-12 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin"></div>
                 <div className="text-center">
-                  <p className="text-indigo-900 font-bold text-lg">Impaginazione Intelligente</p>
-                  <p className="text-indigo-400 text-xs animate-pulse">Gemini sta analizzando la struttura del testo...</p>
+                  <p className="text-indigo-900 font-bold text-lg">AI al lavoro...</p>
                 </div>
               </div>
             </div>
@@ -650,13 +579,6 @@ const App: React.FC = () => {
               fontSize: `${settings.fontSizeBody}pt`
             }}
           >
-            {/* Page Number Placeholder */}
-            {settings.pageNumbering.enabled && (
-              <div className="absolute top-2 right-2 no-print text-[9px] text-indigo-300 font-bold uppercase tracking-widest border border-indigo-100 px-2 py-0.5 rounded">
-                Numerazione Attiva
-              </div>
-            )}
-
             <div
               ref={editorRef}
               className="editor-content w-full h-full text-gray-800 outline-none"
@@ -675,53 +597,10 @@ const App: React.FC = () => {
               .editor-content h1 {
                 font-size: ${settings.fontSizeH1}pt !important;
                 margin-bottom: ${settings.paragraphSpacing * 2}px !important;
-                text-indent: 0 !important;
               }
               .editor-content h2 {
                 font-size: ${settings.fontSizeH2}pt !important;
                 margin-bottom: ${settings.paragraphSpacing}px !important;
-                text-indent: 0 !important;
-              }
-              .editor-content p:has(br) { text-indent: 0 !important; }
-              @keyframes fadeIn {
-                from { opacity: 0; transform: translateY(5px); }
-                to { opacity: 1; transform: translateY(0); }
-              }
-              .animate-fadeIn { animation: fadeIn 0.3s ease-out; }
-
-              @media print {
-                @page {
-                  size: ${settings.format} ${settings.orientation};
-                  margin: 0;
-                }
-                
-                body { 
-                  counter-reset: page ${settings.pageNumbering.startPage - 1};
-                }
-
-                .print-page {
-                  position: relative;
-                  width: ${width} !important;
-                  height: auto !important;
-                  min-height: ${height} !important;
-                  box-shadow: none !important;
-                  padding: ${settings.margins.top}mm ${settings.margins.right}mm ${settings.margins.bottom}mm ${settings.margins.left}mm !important;
-                  overflow: visible !important;
-                }
-
-                ${settings.pageNumbering.enabled ? `
-                .print-page::after {
-                  content: "Pagina " counter(page);
-                  counter-increment: page;
-                  position: fixed;
-                  font-size: 10pt;
-                  color: #666;
-                  pointer-events: none;
-                  
-                  ${settings.pageNumbering.position.includes('top') ? 'top: 15mm;' : 'bottom: 15mm;'}
-                  ${settings.pageNumbering.position.includes('left') ? 'left: 20mm;' : settings.pageNumbering.position.includes('right') ? 'right: 20mm;' : 'left: 50%; transform: translateX(-50%);'}
-                }
-                ` : ''}
               }
             `}} />
           </div>
@@ -730,14 +609,11 @@ const App: React.FC = () => {
 
       <footer className="bg-white border-t border-gray-200 p-2 text-[10px] text-gray-400 flex justify-between px-6 no-print flex-shrink-0 font-bold uppercase tracking-tighter shadow-inner">
         <div className="flex gap-4">
-          <span>FORMATO: <b className="text-indigo-600">{settings.format} ({settings.orientation})</b></span>
-          <span>INTERLINEA: <b className="text-indigo-600">{settings.lineHeight}</b></span>
+          <span>FORMATO: <b className="text-indigo-600">{settings.format}</b></span>
           <span>CORPO: <b className="text-indigo-600">{settings.fontSizeBody}pt</b></span>
-          {settings.pageNumbering.enabled && <span>PAGINE: <b className="text-indigo-600">ATTIVO ({settings.pageNumbering.startPage}+)</b></span>}
-        </div>
-        <div className="flex items-center gap-4">
-          <span className="flex items-center gap-1"><i className="fas fa-magic text-violet-500"></i> Auto-Layout Attivo</span>
-          <span className="flex items-center gap-1"><i className="fas fa-print text-indigo-500"></i> Stampa Pronta</span>
+          <span className="flex items-center gap-1">
+            API: <b className={hasApiKey ? 'text-green-600' : 'text-red-600'}>{hasApiKey ? 'OK' : 'MANCANTE'}</b>
+          </span>
         </div>
       </footer>
     </div>
@@ -745,7 +621,7 @@ const App: React.FC = () => {
 };
 
 const ToolbarButton: React.FC<{ icon: string; onClick: () => void; label?: string }> = ({ icon, onClick, label }) => (
-  <button onClick={onClick} className="w-8 h-8 flex items-center justify-center hover:bg-gray-100 rounded text-gray-600 transition active:scale-90">
+  <button onClick={onClick} className="w-8 h-8 flex items-center justify-center hover:bg-gray-100 rounded text-gray-600 transition active:scale-90" title={label || icon}>
     <i className={`fas fa-${icon} text-xs`}></i>
     {label && <span className="text-[10px] font-bold ml-0.5">{label}</span>}
   </button>
