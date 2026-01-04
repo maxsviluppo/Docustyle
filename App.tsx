@@ -3,10 +3,17 @@ import React, { useState, useRef, useEffect } from 'react';
 import { PageFormat, PageSettings, FORMAT_DIMENSIONS, FONTS, PREDEFINED_TEMPLATES, SavedProject, DocumentTemplate } from './types';
 import { refineDocumentContent, formatDocumentStructure, extractTextFromImage } from './geminiService';
 
-// Dichiarazione globale sicura per gli strumenti AI Studio - Utilizza il tipo AIStudio previsto per evitare conflitti di ridichiarazione
+// Definizione interfaccia per gli strumenti AI Studio
+// Rinominata per evitare conflitti con tipi globali omonimi dell'ambiente
+interface AIStudioGlobal {
+  hasSelectedApiKey: () => Promise<boolean>;
+  openSelectKey: () => Promise<void>;
+}
+
 declare global {
   interface Window {
-    readonly aistudio: AIStudio;
+    // Rimosso readonly per far coincidere i modificatori con la dichiarazione globale dell'ambiente
+    aistudio: AIStudioGlobal;
   }
 }
 
@@ -47,7 +54,6 @@ const App: React.FC = () => {
         const hasKey = await window.aistudio.hasSelectedApiKey();
         setHasApiKey(hasKey);
       } else {
-        // Fallback se non siamo in ambiente AI Studio ma abbiamo process.env.API_KEY
         setHasApiKey(!!process.env.API_KEY);
       }
     } catch (e) {
@@ -98,7 +104,7 @@ const App: React.FC = () => {
         alert("La chiave API non è più valida o è scaduta. Selezionala nuovamente.");
         setActiveTab('api-config');
       } else {
-        alert("Si è verificato un errore durante la chiamata AI. Verifica la tua connessione e la validità della chiave.");
+        alert("Si è verificato un errore durante la chiamata AI.");
       }
     } finally {
       setIsAiLoading(false);
